@@ -14,6 +14,7 @@ st.markdown("""
     .stApp { background-color: #fcfcfc; }
     [data-testid="stMetricValue"] { color: #D40000; font-family: 'Arial Black'; }
     .stTabs [aria-selected="true"] { background-color: #D40000 !important; color: white !important; }
+    .metric-container { background-color: #ffffff; padding: 10px; border-radius: 10px; border: 1px solid #f0f0f0; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -40,14 +41,12 @@ def procesar_logica(df, dias_excluidos):
     lineas_reloj = {i: dias_semana[0] for i in range(1, LINEAS_TOTALES + 1)}
     plan = []
     
-    # Procesamiento por saturación de líneas
     for _, fila in df.iterrows():
         marca_raw = str(fila['Marca'])
         marca_up = marca_raw.upper()
         cajas_totales = int(fila['Unit Quantity'])
         p_auto, p_man = fila['Cajas por hora línea automatica'], fila['Cajas por hora línea manual']
         
-        # Lógica Milka/Choco/Oreo -> L1 o L2
         es_prioritario = any(x in marca_up for x in ["MILKA", "MKA", "OREO", "CHOCO"])
         opciones = [1, 2] if (es_prioritario or p_auto > p_man) else list(range(3, 13))
         
@@ -111,11 +110,15 @@ if archivo:
     df_plan = procesar_logica(df_raw, feriados)
     
     if not df_plan.empty:
-        # KPIs
+        # 1. KPIs SUPERIORES
         lineas_act = df_plan['Línea'].nunique()
+        cajas_totales = df_plan['Cajas'].sum()
+        horas_totales = df_plan['Duracion'].sum()
+        dias_laborados = 5 - len(feriados)
+        
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("🏷️ Líneas en Uso", f"{lineas_act} / 12")
-        c2.metric("📦 Cajas Totales", f"{df_plan['Cajas'].sum():,}")
+        c2.metric("📦 Cajas Totales", f"{cajas_totales:,}")
         c3.metric("👥 Pers. DHL", f"{min(lineas_act, 5) * 6}")
         extra = max(0, (lineas_act - 5) * 6)
         c4.metric("➕ Personal Extra", f"{extra} pers.")
@@ -126,11 +129,10 @@ if archivo:
             col_l, col_r = st.columns([1.1, 0.9])
             with col_l:
                 st.subheader("📈 % Ocupación por Línea")
-                dias_lab = 5 - len(feriados)
                 df_occ = df_plan.groupby(['Línea', 'Tipo'])['Duracion'].sum().reset_index()
                 all_l = pd.DataFrame({'Línea': range(1, 13)})
                 df_occ = pd.merge(all_l, df_occ, on='Línea', how='left').fillna(0)
-                df_occ['%'] = ((df_occ['Duracion'] / (7 * dias_lab)) * 100).round(0).astype(int)
+                df_occ['%'] = ((df_occ['Duracion'] / (7 * dias_laborados)) * 100).round(0).astype(int)
                 df_occ['Label'] = df_occ.apply(lambda x: f"L{int(x['Línea'])} {'⚡' if x['Línea'] <= 2 else '✍️'}", axis=1)
                 
                 fig = px.bar(df_occ, x='%', y='Label', orientation='h', text='%',
@@ -144,6 +146,22 @@ if archivo:
                 resumen_m = resumen_m.sort_values('Cajas', ascending=False)
                 resumen_m.columns = ['Tipo', 'Marca', 'Total Cajas']
                 st.dataframe(resumen_m, use_container_width=True, hide_index=True)
+
+            # --- NUEVA SECCIÓN DE EFICIENCIA (ABAJO) ---
+            st.markdown("---")
+            st.subheader("🎯 Métricas de Eficiencia y Rendimiento")
+            e1, e2, e3, e4 = st.columns(4)
+            
+            # Cálculos de Eficiencia
+            cajas_hora = cajas_totales / horas_totales if horas_totales > 0 else 0
+            cajas_dia = cajas_totales / dias_laborados if dias_laborados > 0 else 0
+            setup_total = len(df_plan) * 5 # 5 min por cada tarea en el plan
+            tiempo_por_caja = (horas_totales * 3600) / cajas_totales if cajas_totales > 0 else 0
+            
+            e1.metric("⏱️ Cajas por Hora", f"{int(cajas_hora)} u/h")
+            e2.metric("📅 Cajas por Día", f"{int(cajas_dia):,} u/d")
+            e3.metric("🛠️ Tiempo Set-up", f"{setup_total} min")
+            e4.metric("⚙️ Segundos por Caja", f"{tiempo_por_caja:.2f} s")
 
         with tab2:
             st.subheader("🔍 Filtros de Secuencia")
