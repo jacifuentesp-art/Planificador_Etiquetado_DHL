@@ -6,8 +6,8 @@ import io
 import plotly.express as px
 import plotly.graph_objects as go
 
-# 1. Configuración de la página (DEBE SER LO PRIMERO)
-st.set_page_config(page_title="DHL | Planner Dashboard", layout="wide", page_icon="📦")
+# 1. Configuración de la página
+st.set_page_config(page_title="DHL | Dashboard de Etiquetado", layout="wide", page_icon="🏷️")
 
 # Estilos visuales DHL
 st.markdown("""
@@ -15,13 +15,13 @@ st.markdown("""
     .stApp { background-color: #fcfcfc; }
     [data-testid="stMetricValue"] { color: #D40000; font-family: 'Arial Black'; }
     .stTabs [aria-selected="true"] { background-color: #D40000 !important; color: white !important; }
+    h1, h2, h3 { font-family: 'Arial'; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- MOTOR DE LÓGICA ---
 def procesar_logica(df, dias_excluidos):
-    # Parámetros solicitados: 7 horas de capacidad y 5 min de set-up
-    INICIO_H, FIN_H, SETUP_MIN = 8, 15, 5  
+    INICIO_H, FIN_H, SETUP_MIN = 8, 15, 5  # Capacidad 7h y Set-up 5 min
     LINEAS_TOTALES = 12
     dias_semana_raw = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     traduccion_inv = {'Lunes': 'Monday', 'Martes': 'Tuesday', 'Miércoles': 'Wednesday', 'Jueves': 'Thursday', 'Viernes': 'Friday'}
@@ -73,11 +73,11 @@ def procesar_logica(df, dias_excluidos):
             tiempo_fin = tiempo_actual + dt.timedelta(hours=procesar/prod_usada)
             plan.append({
                 'Línea': n_linea, 'Día': tiempo_actual.strftime('%A'), 'Marca': marca,
+                'Producto': fila['Descripcion'],
                 'Hora Inicio': tiempo_actual.strftime('%H:%M'), 'Hora Fin': tiempo_fin.strftime('%H:%M'),
                 'Duracion': (tiempo_fin - tiempo_actual).total_seconds() / 3600, 'Cajas': int(procesar)
             })
             cajas_pendientes -= procesar
-            # Set-up de 5 minutos aplicado después de cada tarea
             lineas_reloj[n_linea] = tiempo_fin + dt.timedelta(minutes=SETUP_MIN)
 
     res_df = pd.DataFrame(plan)
@@ -86,47 +86,66 @@ def procesar_logica(df, dias_excluidos):
     return res_df
 
 # --- INTERFAZ ---
-st.title("🚀 Dashboard de Producción DHL")
+st.title("🏭 Dashboard de Etiquetado DHL")
 
 with st.sidebar:
-    st.header("Ajustes de Operación")
-    archivo = st.file_uploader("Subir Archivo Excel", type=["xlsx"])
-    feriados_sel = st.multiselect("Marcar Feriados:", ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"])
-    modo_ranking = st.radio("Ver Ranking por:", ["Cajas Totales", "Horas de Uso"]) 
+    st.header("⚙️ Configuración")
+    archivo = st.file_uploader("Subir Demanda", type=["xlsx"])
+    feriados = st.multiselect("Marcar Feriados:", ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"])
+    modo_ranking = st.radio("Ver Ranking por:", ["Cajas Totales 📦", "Horas de Uso ⏳"])
 
 if archivo:
     df_raw = pd.read_excel(archivo)
-    df_plan = procesar_logica(df_raw, feriados_sel)
+    df_plan = procesar_logica(df_raw, feriados)
     
     if not df_plan.empty:
-        # KPIs
+        # KPIs Superiores con iconos
         lineas_act = df_plan['Línea'].nunique()
         c1, c2, c3 = st.columns(3)
-        c1.metric("Líneas Activas", lineas_act)
-        c2.metric("Cajas Totales", f"{df_plan['Cajas'].sum():,}")
-        c3.metric("Personal Extra", f"{(max(0, lineas_act - 5) * 6)} pers.")
+        c1.metric("🏭 Líneas en Uso", lineas_act)
+        c2.metric("📦 Cajas Totales", f"{df_plan['Cajas'].sum():,}")
+        c3.metric("👥 Personal Extra", f"{(max(0, lineas_act - 5) * 6)}")
 
-        tab1, tab2 = st.tabs(["📊 Gráficos Dinámicos", "📋 Detalle del Plan"])
+        tab1, tab2 = st.tabs(["📊 Gráficos Dinámicos", "📅 Detalle y Orden de Líneas"])
 
         with tab1:
             col_a, col_b = st.columns(2)
+            
             with col_a:
-                st.subheader(f"🏆 Top Marcas por {modo_ranking}")
-                col_metrica = 'Cajas' if modo_ranking == "Cajas Totales" else 'Duracion'
-                df_m = df_plan.groupby('Marca')[col_metrica].sum().reset_index().sort_values(col_metrica)
-                fig_m = px.bar(df_m, x=col_metrica, y='Marca', orientation='h', color_discrete_sequence=['#FFCC00'])
+                st.subheader("🏆 Top de Marcas")
+                metrica = 'Cajas' if "Cajas" in modo_ranking else 'Duracion'
+                df_m = df_plan.groupby('Marca')[metrica].sum().reset_index().sort_values(metrica)
+                fig_m = px.bar(df_m, x=metrica, y='Marca', orientation='h', color_discrete_sequence=['#FFCC00'])
                 st.plotly_chart(fig_m, use_container_width=True)
 
             with col_b:
-                st.subheader("⏳ Carga Horaria (Tope 7h)")
-                df_l = df_plan.groupby(['Línea', 'Día'])['Duracion'].sum().reset_index()
-                fig_l = px.bar(df_l, x='Línea', y='Duracion', color='Día', barmode='group')
-                fig_l.add_hline(y=7, line_dash="dash", line_color="black", annotation_text="Capacidad 7h")
-                st.plotly_chart(fig_l, use_container_width=True)
+                st.subheader("📈 % Ocupación por Línea (Semanal)")
+                # Capacidad total semanal = 35h (7h * 5 días)
+                df_occ = df_plan.groupby('Línea')['Duracion'].sum().reset_index()
+                df_occ['% Ocupación'] = (df_occ['Duracion'] / 35) * 100
+                fig_occ = px.bar(df_occ, x='Línea', y='% Ocupación', 
+                                 range_y=[0, 110], color='% Ocupación',
+                                 color_continuous_scale='Reds')
+                fig_occ.add_hline(y=100, line_dash="dash", line_color="black")
+                st.plotly_chart(fig_occ, use_container_width=True)
 
         with tab2:
-            st.dataframe(df_plan, use_container_width=True)
+            st.subheader("🔍 Filtros de Visualización")
+            f1, f2 = st.columns(2)
+            with f1:
+                sel_dia = st.multiselect("Filtrar por Día:", df_plan['Día'].unique(), default=df_plan['Día'].unique())
+            with f2:
+                sel_linea = st.multiselect("Filtrar por Línea:", sorted(df_plan['Línea'].unique()), default=sorted(df_plan['Línea'].unique()))
+            
+            # Filtrar el dataframe
+            df_view = df_plan[(df_plan['Día'].isin(sel_dia)) & (df_plan['Línea'].isin(sel_linea))]
+            # Ordenar para ver el flujo de entrada
+            df_view = df_view.sort_values(['Día', 'Línea', 'Hora Inicio'])
+            
+            st.dataframe(df_view[['Día', 'Línea', 'Hora Inicio', 'Hora Fin', 'Producto', 'Marca', 'Cajas']], 
+                         use_container_width=True, hide_index=True)
+
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df_plan.to_excel(writer, index=False)
-            st.download_button("📥 Descargar Planificación", buffer, "Plan_DHL.xlsx", "application/vnd.ms-excel")
+            st.download_button("📥 Descargar Planificación Completa", buffer, "Plan_Etiquetado_DHL.xlsx")
