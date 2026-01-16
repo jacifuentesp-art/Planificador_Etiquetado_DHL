@@ -19,7 +19,7 @@ st.markdown("""
 
 # --- FUNCIÓN PARA ICONOS DE MARCA ---
 def obtener_icono_marca(marca):
-    m = marca.upper()
+    m = str(marca).upper()
     if any(x in m for x in ["MILKA", "MKA", "CHOCO"]): return "🍫"
     if "OREO" in m: return "🍪"
     if any(x in m for x in ["TRIDENT", "CHICLE", "CLORETS"]): return "🍬"
@@ -32,7 +32,7 @@ def procesar_logica(df, dias_excluidos):
     dias_semana_raw = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     traduccion_inv = {'Lunes': 'Monday', 'Martes': 'Tuesday', 'Miércoles': 'Wednesday', 'Jueves': 'Thursday', 'Viernes': 'Friday'}
     
-    dias_reales = [d for d in dias_semana_raw if d not in [traduccion_inv[fer] for fer in dias_excluidos]]
+    dias_reales = [d for d in dias_semana_raw if d not in [traduccion_inv.get(fer, "") for fer in dias_excluidos]]
     dias_semana = [dt.datetime(2026, 1, 12 + i, INICIO_H, 0) for i, d in enumerate(dias_semana_raw) if d in dias_reales]
     
     if not dias_semana: return pd.DataFrame()
@@ -40,13 +40,16 @@ def procesar_logica(df, dias_excluidos):
     lineas_reloj = {i: dias_semana[0] for i in range(1, LINEAS_TOTALES + 1)}
     plan = []
     
+    # Procesamiento por saturación de líneas
     for _, fila in df.iterrows():
-        marca = str(fila['Marca']).upper()
+        marca_raw = str(fila['Marca'])
+        marca_up = marca_raw.upper()
         cajas_totales = int(fila['Unit Quantity'])
         p_auto, p_man = fila['Cajas por hora línea automatica'], fila['Cajas por hora línea manual']
         
-        es_choco = any(x in marca for x in ["MILKA", "MKA", "OREO"])
-        opciones = [1, 2] if (es_choco or p_auto > p_man) else list(range(3, 13))
+        # Lógica Milka/Choco/Oreo -> L1 o L2
+        es_prioritario = any(x in marca_up for x in ["MILKA", "MKA", "OREO", "CHOCO"])
+        opciones = [1, 2] if (es_prioritario or p_auto > p_man) else list(range(3, 13))
         
         cajas_pendientes = cajas_totales
         while cajas_pendientes > 0:
@@ -79,8 +82,8 @@ def procesar_logica(df, dias_excluidos):
                 'Línea': n_linea,
                 'Tipo': "Automática ⚡" if n_linea <= 2 else "Manual ✍️",
                 'Día': tiempo_actual.strftime('%A'),
-                'Marca': marca,
-                'Icono': obtener_icono_marca(marca),
+                'Marca': marca_raw,
+                'Icono': obtener_icono_marca(marca_raw),
                 'Producto': fila['Descripcion'],
                 'Hora Inicio': tiempo_actual.strftime('%H:%M'),
                 'Hora Fin': tiempo_fin.strftime('%H:%M'),
@@ -96,34 +99,31 @@ def procesar_logica(df, dias_excluidos):
     return res_df
 
 # --- INTERFAZ ---
-st.title("🏷️ Dashboard de Etiquetado DHL")
+st.title("🏭 Dashboard de Etiquetado DHL")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
     archivo = st.file_uploader("Subir Demanda (Excel)", type=["xlsx"])
     feriados = st.multiselect("Marcar Feriados:", ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"])
-    modo_ranking = st.radio("Ranking por:", ["Cajas Totales 📦", "Horas de Uso ⏳"])
 
 if archivo:
     df_raw = pd.read_excel(archivo)
     df_plan = procesar_logica(df_raw, feriados)
     
     if not df_plan.empty:
-        # KPIs SUPERIORES
+        # KPIs
         lineas_act = df_plan['Línea'].nunique()
         c1, c2, c3, c4 = st.columns(4)
-        
-        c1.metric("🏭 Líneas en Uso", f"{lineas_act} / 12")
+        c1.metric("🏷️ Líneas en Uso", f"{lineas_act} / 12")
         c2.metric("📦 Cajas Totales", f"{df_plan['Cajas'].sum():,}")
         c3.metric("👥 Pers. DHL", f"{min(lineas_act, 5) * 6}")
-        # Personal Extra: si usas más de 5 líneas (30 pers)
         extra = max(0, (lineas_act - 5) * 6)
         c4.metric("➕ Personal Extra", f"{extra} pers.")
 
-        tab1, tab2 = st.tabs(["📊 Dashboard Visual", "📅 Secuencia y Filtros"])
+        tab1, tab2 = st.tabs(["📊 Dashboard Visual", "📅 Secuencia Detallada"])
 
         with tab1:
-            col_l, col_r = st.columns([1.2, 0.8])
+            col_l, col_r = st.columns([1.1, 0.9])
             with col_l:
                 st.subheader("📈 % Ocupación por Línea")
                 dias_lab = 5 - len(feriados)
@@ -133,17 +133,17 @@ if archivo:
                 df_occ['%'] = ((df_occ['Duracion'] / (7 * dias_lab)) * 100).round(0).astype(int)
                 df_occ['Label'] = df_occ.apply(lambda x: f"L{int(x['Línea'])} {'⚡' if x['Línea'] <= 2 else '✍️'}", axis=1)
                 
-                fig_occ = px.bar(df_occ, x='%', y='Label', orientation='h', text='%',
-                                 color='%', color_continuous_scale='Reds', range_x=[0, 110])
-                fig_occ.update_layout(yaxis={'categoryorder':'array', 'categoryarray': df_occ['Label'][::-1]})
-                st.plotly_chart(fig_occ, use_container_width=True)
+                fig = px.bar(df_occ, x='%', y='Label', orientation='h', text='%',
+                             color='%', color_continuous_scale='Reds', range_x=[0, 115])
+                fig.update_layout(yaxis={'categoryorder':'array', 'categoryarray': df_occ['Label'][::-1]})
+                st.plotly_chart(fig, use_container_width=True)
 
             with col_r:
-                st.subheader(f"🏆 Top Marcas")
-                met = 'Cajas' if "Cajas" in modo_ranking else 'Duracion'
-                df_m = df_plan.groupby(['Marca', 'Icono'])[met].sum().reset_index().sort_values(met)
-                df_m['Marca_Full'] = df_m['Icono'] + " " + df_m['Marca']
-                st.plotly_chart(px.bar(df_m, x=met, y='Marca_Full', orientation='h', color_discrete_sequence=['#FFCC00']), use_container_width=True)
+                st.subheader("📋 Resumen Cajas por Marca")
+                resumen_m = df_plan.groupby(['Icono', 'Marca'])['Cajas'].sum().reset_index()
+                resumen_m = resumen_m.sort_values('Cajas', ascending=False)
+                resumen_m.columns = ['Tipo', 'Marca', 'Total Cajas']
+                st.dataframe(resumen_m, use_container_width=True, hide_index=True)
 
         with tab2:
             st.subheader("🔍 Filtros de Secuencia")
