@@ -6,7 +6,7 @@ import io
 import plotly.express as px
 
 # 1. Configuración de la página
-st.set_page_config(page_title="DHL | Torre de Control Etiquetado", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="DHL | Torre de Control", layout="wide", page_icon="🏷️")
 
 # Estilos visuales DHL
 st.markdown("""
@@ -17,7 +17,15 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- MOTOR DE LÓGICA: PRIORIDAD LLENADO TOTAL ---
+# --- FUNCIÓN PARA ICONOS DE MARCA ---
+def obtener_icono_marca(marca):
+    m = marca.upper()
+    if any(x in m for x in ["MILKA", "MKA", "CHOCO"]): return "🍫"
+    if "OREO" in m: return "🍪"
+    if any(x in m for x in ["TRIDENT", "CHICLE", "CLORETS"]): return "🍬"
+    return "📦"
+
+# --- MOTOR DE LÓGICA ---
 def procesar_logica(df, dias_excluidos):
     INICIO_H, FIN_H, SETUP_MIN = 8, 15, 5
     LINEAS_TOTALES = 12
@@ -29,64 +37,50 @@ def procesar_logica(df, dias_excluidos):
     
     if not dias_semana: return pd.DataFrame()
 
-    # Inicializar el reloj de cada línea en el primer día disponible
     lineas_reloj = {i: dias_semana[0] for i in range(1, LINEAS_TOTALES + 1)}
     plan = []
     
-    # Ordenamos la demanda para procesar primero lo que requiere líneas automáticas si es posible
     for _, fila in df.iterrows():
         marca = str(fila['Marca']).upper()
         cajas_totales = int(fila['Unit Quantity'])
         p_auto, p_man = fila['Cajas por hora línea automatica'], fila['Cajas por hora línea manual']
         
-        # Prioridad de línea según tipo de producto/velocidad
-        es_choco = any(x in marca for x in ["MKA", "MILKA", "OREO"])
+        es_choco = any(x in marca for x in ["MILKA", "MKA", "OREO"])
         opciones = [1, 2] if (es_choco or p_auto > p_man) else list(range(3, 13))
         
         cajas_pendientes = cajas_totales
-        
-        # EL OBJETIVO: Llenar la línea actual lo más posible antes de saltar a otra
         while cajas_pendientes > 0:
-            # Seleccionar la línea disponible más prioritaria (la primera de la lista de opciones)
-            # que aún tenga tiempo en la semana
             n_linea = None
             for l in opciones:
                 if lineas_reloj[l] < dias_semana[-1].replace(hour=FIN_H):
                     n_linea = l
                     break
-            
-            if n_linea is None: break # No hay más capacidad en ninguna línea
+            if n_linea is None: break
 
             tiempo_actual = lineas_reloj[n_linea]
-            
-            # Si el reloj de la línea llegó al fin del día, saltar al inicio del siguiente día laboral
             if tiempo_actual.hour >= FIN_H:
-                actual_idx = [i for i, d in enumerate(dias_semana) if d.date() == tiempo_actual.date()]
-                if actual_idx and actual_idx[0] + 1 < len(dias_semana):
-                    lineas_reloj[n_linea] = dias_semana[actual_idx[0] + 1]
+                idx = [i for i, d in enumerate(dias_semana) if d.date() == tiempo_actual.date()]
+                if idx and idx[0] + 1 < len(dias_semana):
+                    lineas_reloj[n_linea] = dias_semana[idx[0] + 1]
                     continue
-                else: 
-                    # Esta línea se llenó toda la semana, probar con la siguiente opción
-                    opciones.pop(0)
-                    if not opciones: break
-                    continue
+                else: break
 
             fin_dia = tiempo_actual.replace(hour=FIN_H, minute=0)
             horas_disp = (fin_dia - tiempo_actual).total_seconds() / 3600
+            prod = p_auto if n_linea <= 2 else p_man
+            procesar = min(cajas_pendientes, math.floor(horas_disp * prod))
             
-            prod_usada = p_auto if n_linea <= 2 else p_man
-            procesar = min(cajas_pendientes, math.floor(horas_disp * prod_usada))
-            
-            if procesar <= 0: # Día agotado para esta línea
+            if procesar <= 0:
                 lineas_reloj[n_linea] = tiempo_actual.replace(hour=FIN_H)
                 continue
 
-            tiempo_fin = tiempo_actual + dt.timedelta(hours=procesar/prod_usada)
+            tiempo_fin = tiempo_actual + dt.timedelta(hours=procesar/prod)
             plan.append({
                 'Línea': n_linea,
-                'Icono': "🍫" if n_linea <= 2 else "📦",
+                'Tipo': "Automática ⚡" if n_linea <= 2 else "Manual ✍️",
                 'Día': tiempo_actual.strftime('%A'),
                 'Marca': marca,
+                'Icono': obtener_icono_marca(marca),
                 'Producto': fila['Descripcion'],
                 'Hora Inicio': tiempo_actual.strftime('%H:%M'),
                 'Hora Fin': tiempo_fin.strftime('%H:%M'),
@@ -115,44 +109,55 @@ if archivo:
     df_plan = procesar_logica(df_raw, feriados)
     
     if not df_plan.empty:
-        # 1. KPIs SUPERIORES
+        # KPIs SUPERIORES
         lineas_act = df_plan['Línea'].nunique()
         c1, c2, c3, c4 = st.columns(4)
-        dias_lab = 5 - len(feriados)
         
         c1.metric("🏭 Líneas en Uso", f"{lineas_act} / 12")
         c2.metric("📦 Cajas Totales", f"{df_plan['Cajas'].sum():,}")
-        c3.metric("👥 Personal Total", f"{lineas_act * 6}")
-        c4.metric("⏱️ Tiempo Set-up", f"{len(df_plan)*5} min")
+        c3.metric("👥 Pers. DHL", f"{min(lineas_act, 5) * 6}")
+        # Personal Extra: si usas más de 5 líneas (30 pers)
+        extra = max(0, (lineas_act - 5) * 6)
+        c4.metric("➕ Personal Extra", f"{extra} pers.")
 
-        tab1, tab2 = st.tabs(["📊 Dashboard de Ocupación", "📅 Secuencia por Línea"])
+        tab1, tab2 = st.tabs(["📊 Dashboard Visual", "📅 Secuencia y Filtros"])
 
         with tab1:
             col_l, col_r = st.columns([1.2, 0.8])
             with col_l:
-                st.subheader("📈 % Ocupación Semanal por Línea")
-                df_occ = df_plan.groupby(['Línea', 'Icono'])['Duracion'].sum().reset_index()
-                all_lines = pd.DataFrame({'Línea': range(1, 13)})
-                df_occ = pd.merge(all_lines, df_occ, on='Línea', how='left').fillna(0)
-                
+                st.subheader("📈 % Ocupación por Línea")
+                dias_lab = 5 - len(feriados)
+                df_occ = df_plan.groupby(['Línea', 'Tipo'])['Duracion'].sum().reset_index()
+                all_l = pd.DataFrame({'Línea': range(1, 13)})
+                df_occ = pd.merge(all_l, df_occ, on='Línea', how='left').fillna(0)
                 df_occ['%'] = ((df_occ['Duracion'] / (7 * dias_lab)) * 100).round(0).astype(int)
-                df_occ['Etiqueta'] = df_occ.apply(lambda x: f"L{int(x['Línea'])} {x['Icono'] if x['Icono'] != 0 else '⚪'}", axis=1)
+                df_occ['Label'] = df_occ.apply(lambda x: f"L{int(x['Línea'])} {'⚡' if x['Línea'] <= 2 else '✍️'}", axis=1)
                 
-                # Gráfico horizontal para ver el "llenado"
-                fig_occ = px.bar(df_occ, x='%', y='Etiqueta', orientation='h', text='%',
+                fig_occ = px.bar(df_occ, x='%', y='Label', orientation='h', text='%',
                                  color='%', color_continuous_scale='Reds', range_x=[0, 110])
-                fig_occ.update_traces(texttemplate='%{text}%', textposition='outside')
-                fig_occ.update_layout(yaxis={'categoryorder':'array', 'categoryarray': df_occ['Etiqueta'][::-1]})
+                fig_occ.update_layout(yaxis={'categoryorder':'array', 'categoryarray': df_occ['Label'][::-1]})
                 st.plotly_chart(fig_occ, use_container_width=True)
 
             with col_r:
-                st.subheader("🏆 Ranking Marcas")
+                st.subheader(f"🏆 Top Marcas")
                 met = 'Cajas' if "Cajas" in modo_ranking else 'Duracion'
-                df_m = df_plan.groupby('Marca')[met].sum().reset_index().sort_values(met)
-                st.plotly_chart(px.bar(df_m, x=met, y='Marca', orientation='h', color_discrete_sequence=['#FFCC00']), use_container_width=True)
+                df_m = df_plan.groupby(['Marca', 'Icono'])[met].sum().reset_index().sort_values(met)
+                df_m['Marca_Full'] = df_m['Icono'] + " " + df_m['Marca']
+                st.plotly_chart(px.bar(df_m, x=met, y='Marca_Full', orientation='h', color_discrete_sequence=['#FFCC00']), use_container_width=True)
 
         with tab2:
-            st.subheader("🔍 Orden de Entrada a Proceso")
-            l_sel = st.multiselect("Ver Líneas:", range(1, 13), default=range(1, 13))
-            df_det = df_plan[df_plan['Línea'].isin(l_sel)].sort_values(['Línea', 'Día', 'Hora Inicio'])
-            st.dataframe(df_det[['Línea', 'Día', 'Hora Inicio', 'Hora Fin', 'Marca', 'Producto', 'Cajas']], use_container_width=True, hide_index=True)
+            st.subheader("🔍 Filtros de Secuencia")
+            f1, f2 = st.columns(2)
+            with f1: d_sel = st.multiselect("Días:", df_plan['Día'].unique(), default=df_plan['Día'].unique())
+            with f2: l_sel = st.multiselect("Líneas:", range(1, 13), default=range(1, 13))
+            
+            df_det = df_plan[(df_plan['Día'].isin(d_sel)) & (df_plan['Línea'].isin(l_sel))]
+            df_det = df_det.sort_values(['Día', 'Línea', 'Hora Inicio'])
+            
+            st.dataframe(df_det[['Día', 'Línea', 'Tipo', 'Hora Inicio', 'Hora Fin', 'Marca', 'Producto', 'Cajas']], 
+                         use_container_width=True, hide_index=True)
+            
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                df_plan.to_excel(writer, index=False)
+            st.download_button("📥 Descargar Excel", buffer, "Plan_DHL_Final.xlsx")
